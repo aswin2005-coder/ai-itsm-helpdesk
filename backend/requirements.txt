@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pymongo
+dnspython
+python-dotenv
+httpx
+huggingface_hub
+scikit-learn
+numpy
