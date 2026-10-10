@@ -79,7 +79,9 @@ Open the URL shown in the terminal (for example `http://localhost:5173`). To poi
 
 ## ServiceNow integration status
 
-The ServiceNow integration is implemented with the REST Table API (`incident` for tickets, `sc_request` for software requests) and is switched on by setting the three `SERVICENOW_*` variables. A free Personal Developer Instance could not be provisioned in time for this submission ("no instance currently available"), so it was not tested against a live instance. Without credentials the app uses locally generated reference numbers.
+The ServiceNow integration is implemented with the REST Table API (`incident` for tickets, `sc_request` for software requests) and is switched on by setting the three `SERVICENOW_*` variables. Without credentials the app uses locally generated reference numbers.
+- Verified live against a ServiceNow developer instance: tickets raised in the app are created as real incidents (e.g. INC0010002).
+- Uses a dedicated integration user with the `itil` and `snc_basic_auth_api_access` roles (ServiceNow now restricts Basic Auth for REST by default).
 
 ## Limitations
 
