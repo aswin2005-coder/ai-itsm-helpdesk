@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import "./App.css";
 
 // Backend URL. Set VITE_API_URL in .env when the FastAPI backend is deployed.
 let API = "http://localhost:8000";
@@ -56,11 +57,11 @@ const ghostBtn = { padding: "12px 20px", border: "1px solid #ccc", borderRadius:
 const input = { width: "100%", padding: 14, marginTop: 10, borderRadius: 10, border: "1px solid #ccc", fontSize: 16, boxSizing: "border-box" };
 
 const TABS = [
-  ["intake", "🎫 Ticket Intake"],
-  ["chat", "💬 Chatbot"],
-  ["kb", "📚 Knowledge Base"],
-  ["software", "💻 Software"],
-  ["tickets", "📋 My Tickets"],
+  ["intake", "Ticket intake"],
+  ["chat", "Help assistant"],
+  ["kb", "Knowledge base"],
+  ["software", "Software requests"],
+  ["tickets", "My tickets"],
 ];
 
 function Field({ label, value, bg }) {
@@ -112,7 +113,7 @@ function Intake({ onTicket, setOffline }) {
   const examples = ["My VPN is not connecting", "I forgot my password", "My Outlook email is not working", "I need Visual Studio software"];
 
   return (
-    <section style={card}>
+    <section className="panel" style={card}>
       <h2>🎫 Intelligent Ticket Intake</h2>
       <p style={{ color: "#666" }}>Describe your IT problem. AI will classify it and create a ticket.</p>
       <textarea
@@ -162,18 +163,95 @@ function Intake({ onTicket, setOffline }) {
   );
 }
 
+// Polls the backend while a software install runs; calls onUpdate({state, message, steps}).
+function watchInstall(ref, onUpdate) {
+  let stopped = false;
+  const tick = async (n) => {
+    if (stopped || n > 400) return;
+    try {
+      const res = await fetch(`${API}/api/software/status/${ref}`);
+      const st = await res.json();
+      onUpdate(st);
+      if (st.state === "installed" || st.state === "failed" || st.state === "rejected") return;
+    } catch {
+      /* backend busy, try again */
+    }
+    setTimeout(() => tick(n + 1), 3000);
+  };
+  tick(0);
+  return () => {
+    stopped = true;
+  };
+}
+
 // ---------- 4. Chatbot ----------
 function Chatbot({ setOffline }) {
   const [msgs, setMsgs] = useState([{ role: "bot", text: "Hi! Ask me any IT question, like VPN, password or Outlook." }]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  // password flow: { ref, step: "wait" | "email" | "otp" | "newpass" }
+  const [flow, setFlow] = useState(null);
+
+  const say = (t) => setMsgs((m) => [...m, { role: "bot", text: t }]);
+
+  // while waiting for the manager, check the approval every 3 seconds
+  useEffect(() => {
+    if (!flow || flow.step !== "wait") return;
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/api/password/status/${flow.ref}`);
+        const st = (await res.json()).state;
+        if (st === "approved") {
+          say("Your manager approved the request. Please type your Gmail address to get an OTP.");
+          setFlow({ ref: flow.ref, step: "email" });
+        } else if (st === "rejected") {
+          say("Your manager rejected the password change request. The ticket is closed.");
+          setFlow(null);
+        }
+      } catch {
+        /* backend busy */
+      }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [flow]);
+
+  async function flowStep(q) {
+    const post = async (path, body) => {
+      const res = await fetch(`${API}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      return res.json();
+    };
+    if (flow.step === "email") {
+      const r = await post("/api/password/email", { reference: flow.ref, email: q });
+      say(r.message);
+      if (r.ok) setFlow({ ref: flow.ref, step: "otp" });
+    } else if (flow.step === "otp") {
+      const r = await post("/api/password/otp", { reference: flow.ref, otp: q });
+      say(r.message);
+      if (r.ok) setFlow({ ref: flow.ref, step: "newpass" });
+      else if (r.restart) setFlow({ ref: flow.ref, step: "email" });
+    } else if (flow.step === "newpass") {
+      const r = await post("/api/password/reset", { reference: flow.ref, password: q });
+      say(r.message);
+      if (r.ok) setFlow(null);
+    }
+  }
 
   async function send() {
     const q = text.trim();
     if (!q) return;
     setText("");
-    setMsgs((m) => [...m, { role: "user", text: q }]);
+    const shown = flow?.step === "newpass" ? "••••••••" : q;
+    setMsgs((m) => [...m, { role: "user", text: shown }]);
     setBusy(true);
+    if (flow && flow.step !== "wait") {
+      try {
+        await flowStep(q);
+      } catch {
+        say("Could not reach the backend. Please try again.");
+      }
+      setBusy(false);
+      return;
+    }
     const { data, offline } = await call(
       "/api/chat",
       { method: "POST", body: JSON.stringify({ message: q }) },
@@ -184,16 +262,24 @@ function Chatbot({ setOffline }) {
     );
     setOffline(offline);
     setMsgs((m) => [...m, { role: "bot", text: data.reply, sources: data.sources }]);
+    if (data.flow === "waiting_approval") setFlow({ ref: data.reference, step: "wait" });
+    if (data.install_started) {
+      watchInstall(data.reference, (st) => {
+        if (st.state === "installed" || st.state === "failed" || st.state === "rejected") {
+          setMsgs((m) => [...m, { role: "bot", text: `Install update for ${data.reference}: ${st.message}` }]);
+        }
+      });
+    }
     setBusy(false);
   }
 
   return (
-    <section style={card}>
+    <section className="panel" style={card}>
       <h2>💬 AI Chatbot</h2>
-      <div style={{ minHeight: 200, maxHeight: 360, overflowY: "auto", marginTop: 10 }}>
+      <div className="chat-window" style={{ minHeight: 200, maxHeight: 360, overflowY: "auto", marginTop: 10 }}>
         {msgs.map((m, i) => (
-          <div key={i} style={{ textAlign: m.role === "user" ? "right" : "left", margin: "8px 0" }}>
-            <span style={{ display: "inline-block", padding: "10px 14px", borderRadius: 12, maxWidth: "85%", background: m.role === "user" ? "#2563eb" : "#f1f5f9", color: m.role === "user" ? "white" : "#111" }}>
+          <div className="chat-line" key={i} style={{ textAlign: m.role === "user" ? "right" : "left", margin: "8px 0" }}>
+            <span className={m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"} style={{ display: "inline-block", padding: "10px 14px", borderRadius: 12, maxWidth: "85%", background: m.role === "user" ? "#2563eb" : "#f1f5f9", color: m.role === "user" ? "white" : "#111" }}>
               {m.text}
             </span>
             {m.sources?.length > 0 && <div style={{ fontSize: 12, color: "#666", marginTop: 3 }}>Source: {m.sources.join(", ")}</div>}
@@ -201,8 +287,8 @@ function Chatbot({ setOffline }) {
         ))}
         {busy && <p style={{ color: "#666" }}>Thinking...</p>}
       </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input style={input} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Type your question..." />
+      <div className="chat-compose" style={{ display: "flex", gap: 8 }}>
+        <input style={input} type={flow?.step === "newpass" ? "password" : "text"} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={flow?.step === "wait" ? "Waiting for manager approval..." : flow?.step === "email" ? "Type your Gmail..." : flow?.step === "otp" ? "Type the OTP..." : flow?.step === "newpass" ? "Type your new password..." : "Type your question..."} />
         <button type="button" style={{ ...primaryBtn, marginTop: 10 }} onClick={send}>Send</button>
       </div>
     </section>
@@ -226,7 +312,7 @@ function KnowledgeBase({ setOffline }) {
   }
 
   return (
-    <section style={card}>
+    <section className="panel" style={card}>
       <h2>📚 Knowledge Base</h2>
       <p style={{ color: "#666" }}>Search articles using AI semantic search.</p>
       <div style={{ display: "flex", gap: 8 }}>
@@ -249,7 +335,8 @@ function Software({ onTicket, setOffline }) {
   const [name, setName] = useState("Visual Studio Code");
   const [reason, setReason] = useState("");
   const [done, setDone] = useState(null);
-  const options = ["Visual Studio Code", "Visual Studio", "Python", "Git", "Docker Desktop", "Postman"];
+  const [live, setLive] = useState(null);
+  const options = ["Visual Studio Code", "Visual Studio", "Python", "Git", "GitHub Desktop", "Docker Desktop", "Postman", "Node.js", "Java JDK", "Google Chrome", "Mozilla Firefox", "7-Zip", "Notepad++", "Slack", "Zoom", "VLC Media Player"];
 
   async function submit() {
     const { data, offline } = await call(
@@ -259,11 +346,13 @@ function Software({ onTicket, setOffline }) {
     );
     setOffline(offline);
     setDone(data);
+    setLive(null);
+    if (data.install_started) watchInstall(data.reference, setLive);
     onTicket({ intent: "Service Request", category: `Software: ${name}`, priority: "P3", team: "Software Support", reference: data.reference, description: reason || name });
   }
 
   return (
-    <section style={card}>
+    <section className="panel" style={card}>
       <h2>💻 Software Provisioning</h2>
       <select style={input} value={name} onChange={(e) => setName(e.target.value)}>
         {options.map((o) => <option key={o}>{o}</option>)}
@@ -274,6 +363,11 @@ function Software({ onTicket, setOffline }) {
         <div style={{ marginTop: 18, padding: 16, background: "#ecfdf5", borderRadius: 10 }}>
           <b>{done.reference}</b>: {done.status}
           <p style={{ margin: "6px 0 0" }}>{done.message}</p>
+          {live && (
+            <p style={{ margin: "6px 0 0" }}>
+              Install status: <b>{live.state}</b>. {live.message}
+            </p>
+          )}
         </div>
       )}
     </section>
@@ -292,7 +386,7 @@ function Tickets({ local, setOffline }) {
   }, []); // eslint-disable-line
 
   return (
-    <section style={card}>
+    <section className="panel" style={card}>
       <h2>📋 My Tickets</h2>
       {list.length === 0 && <p>No tickets yet. Create one in Ticket Intake.</p>}
       {list.map((t, i) => (
@@ -314,24 +408,25 @@ export default function App() {
 
   return (
     <div className="app">
-      <header style={{ background: "#111827", color: "white", padding: 25, textAlign: "center" }}>
-        <h1>🤖 AI IT Helpdesk</h1>
-        <p>Employee Self-Service & Intelligent IT Automation</p>
-        <div style={{ display: "inline-block", marginTop: 10, padding: "6px 14px", borderRadius: 20, background: offline ? "#92400e" : "#166534", fontSize: 14 }}>
-          {offline ? "● Demo mode (backend offline)" : "● AI System Online"}
+      <header className="app-header">
+        <div className="header-inner">
+          <div className="brand"><div className="brand-mark" aria-hidden="true">IT</div><div><h1>AI IT Helpdesk</h1><p>Employee support, made simple</p></div></div>
+          <div className={`connection${offline ? " offline" : ""}`}><span className="connection-dot" />{offline ? "Demo mode · backend offline" : "Helpdesk system online"}</div>
         </div>
       </header>
 
-      <nav style={{ display: "flex", gap: 8, overflowX: "auto", padding: "15px 20px", maxWidth: 1000, margin: "0 auto" }}>
+      <main className="workspace">
+        <div className="page-intro"><h2>How can we help?</h2><p>Find an answer, submit an IT issue, or manage your requests.</p></div>
+
+      <nav className="tab-nav" aria-label="Helpdesk sections">
         {TABS.map(([id, label]) => (
-          <button key={id} type="button" onClick={() => setTab(id)}
+          <button key={id} type="button" aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}
             style={{ ...ghostBtn, whiteSpace: "nowrap", padding: "10px 16px", background: tab === id ? "#2563eb" : "white", color: tab === id ? "white" : "#333" }}>
             {label}
           </button>
         ))}
       </nav>
 
-      <main style={{ maxWidth: 1000, margin: "0 auto", padding: "10px 20px 30px" }}>
         {tab === "intake" && <Intake onTicket={addTicket} setOffline={setOffline} />}
         {tab === "chat" && <Chatbot setOffline={setOffline} />}
         {tab === "kb" && <KnowledgeBase setOffline={setOffline} />}
@@ -339,7 +434,7 @@ export default function App() {
         {tab === "tickets" && <Tickets local={tickets} setOffline={setOffline} />}
       </main>
 
-      <footer style={{ background: "#111827", color: "white", textAlign: "center", padding: 20 }}>
+      <footer className="app-footer">
         <p style={{ margin: 0 }}>AI IT Helpdesk © 2026 | Intelligent IT Automation</p>
       </footer>
     </div>
